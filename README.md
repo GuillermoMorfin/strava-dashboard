@@ -13,12 +13,12 @@ them in a Streamlit dashboard.
 
 <table>
   <tr>
-    <td><img src="docs/pace.png" alt="Pace trend with rolling median"><br><sub><b>Pace trend</b>: every run plus a rolling median</sub></td>
-    <td><img src="docs/hr-zones.png" alt="Time in heart-rate zones"><br><sub><b>HR zones</b>: time in zone from second-by-second heart rate</sub></td>
+    <td><img src="docs/hr-zones.png" alt="Time in heart-rate zones and easy vs hard share over time"><br><sub><b>HR zones</b>: time in zone, and the easy/moderate/hard split week by week against an 80% easy target</sub></td>
+    <td><img src="docs/aerobic-efficiency.png" alt="Zone 2 pace and efficiency factor over time"><br><sub><b>Aerobic efficiency</b>: pace and meters per heartbeat on steady zone 2 runs</sub></td>
   </tr>
   <tr>
     <td><img src="docs/training-load.png" alt="Acute vs chronic training load"><br><sub><b>Training load</b>: acute vs chronic load and the ACWR</sub></td>
-    <td><img src="docs/race-predictions.png" alt="Race time predictions"><br><sub><b>Race predictions</b>: Daniels VDOT and Riegel</sub></td>
+    <td><img src="docs/pace.png" alt="Pace trend with rolling median"><br><sub><b>Pace trend</b>: every run plus a rolling median</sub></td>
   </tr>
 </table>
 
@@ -35,6 +35,8 @@ and an interactive dashboard.
 - **Weekly mileage**: distance, run count, hours and long run per week
 - **Pace trends**: every run plus a rolling median
 - **Heart-rate zone distribution**: time in zone overall and per week, from second-by-second HR streams
+- **Easy vs hard over time**: weekly or monthly share of easy (Z1–2), moderate (Z3) and hard (Z4–5) time against an 80% easy target
+- **Aerobic efficiency**: pace and efficiency factor (meters per heartbeat) on steady zone 2 runs, to see whether your base is improving
 - **Acute:chronic training load**: TRIMP, distance or duration load with EWMA or rolling ACWR
 - **Race predictions**: 5K / 10K / half / marathon by Daniels VDOT and Riegel
 
@@ -162,6 +164,18 @@ skipped. Zones come from your Strava profile when available, otherwise they're s
 60/70/80/90% of max HR. Streams are stored raw, so changing zones recomputes history
 without re-downloading anything.
 
+**Easy vs hard over time.** Zone time is grouped into easy (Z1–2), moderate (Z3) and hard
+(Z4–5) and shown as a share per week or month. Weeks with less than 30 minutes of HR data are
+hidden, since one run would swing them. It only covers runs whose HR stream has been fetched
+(`sync --streams N`). The 80% line is the usual polarized/80-20 guideline, not a hard rule.
+
+**Aerobic efficiency.** Uses runs of 20+ minutes whose *average* HR falls in zone 2, road runs
+only by default (trail and hills distort pace). For each run it shows pace and the
+**efficiency factor**, `EF = speed (m/min) ÷ average HR`, i.e. meters covered per heartbeat,
+each with a rolling median. Faster pace at the same HR, or a rising EF, means better aerobic
+fitness. Heat, wind, hills, fatigue and how the run was paced all lower EF, and zones are
+today's zones applied to older runs, so read it as a trend over weeks rather than per run.
+
 **Training load.**
 - *TRIMP* (default): Banister's `minutes × HRr × 0.64 × e^(1.92 × HRr)`, where
   `HRr = (avg HR − resting) / (max − resting)`. Runs without HR are estimated from your
@@ -198,7 +212,7 @@ src/strava_dashboard/
   client.py     Strava API client (activities, zones, HR streams, 429 handling)
   db.py         DuckDB schema, upserts, loaders
   sync.py       incremental, resumable sync
-  metrics.py    weekly volume, pace, HR zones, TRIMP, ACWR, VDOT/Riegel
+  metrics.py    weekly volume, pace, HR zones, intensity split, efficiency, TRIMP, ACWR, VDOT/Riegel
   dashboard.py  Streamlit app
   demo.py       synthetic data generator
   cli.py        `strava-dash` command

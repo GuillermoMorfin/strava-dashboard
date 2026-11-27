@@ -151,6 +151,107 @@ def zone_time_by_activity(
     return long[columns]
 
 
+INTENSITY_LEVELS = ("easy", "moderate", "hard")  # Z1-2, Z3, Z4-5
+
+
+def intensity_distribution(
+    zone_time: pd.DataFrame, freq: str = "W", min_hours: float = 0.5
+) -> pd.DataFrame:
+    """Share of heart-rate time that was easy (Z1-2), moderate (Z3) or hard (Z4+) per period.
+
+    `zone_time` is the output of `zone_time_by_activity`. `freq` is "W" (Monday-start
+    weeks) or "M" (calendar months). Periods with less than `min_hours` of HR data are
+    dropped, because a single run would swing the shares. Returns one row per period with
+    the three shares (summing to 1) and the hours of HR data behind them.
+    """
+    columns = ["period_start", *INTENSITY_LEVELS, "hours"]
+    if freq not in ("W", "M"):
+        raise ValueError("freq must be 'W' or 'M'")
+    if zone_time.empty:
+        return pd.DataFrame(columns=columns)
+    dates = zone_time["start_date_local"]
+    period = week_start(dates) if freq == "W" else dates.dt.to_period("M").dt.start_time
+    level = np.select(
+        [zone_time["zone"] <= 2, zone_time["zone"] == 3], ["easy", "moderate"], "hard"
+    )
+    seconds = (
+        zone_time.assign(period_start=period.values, level=level)
+        .pivot_table(
+            index="period_start", columns="level", values="seconds", aggfunc="sum", fill_value=0
+        )
+        .reindex(columns=list(INTENSITY_LEVELS), fill_value=0)
+    )
+    total = seconds.sum(axis=1)
+    out = seconds.div(total.where(total > 0), axis=0)
+    out["hours"] = total / 3600
+    out = out[out["hours"] >= min_hours]
+    out.columns.name = None
+    return out.reset_index()[columns]
+
+
+# ---------------------------------------------------------------------------
+# Aerobic efficiency
+# ---------------------------------------------------------------------------
+
+
+def aerobic_efficiency(
+    activities: pd.DataFrame,
+    zones: Zones,
+    units: str = "km",
+    *,
+    road_only: bool = True,
+    min_minutes: float = 20,
+    window: int = 10,
+) -> pd.DataFrame:
+    """Pace and efficiency of steady aerobic runs, to see whether the base is improving.
+
+    Keeps runs of at least `min_minutes` whose average HR falls inside zone 2
+    (`zones[1]`), dropping trail runs when `road_only` (hills distort pace). For each run:
+    pace (min per unit) and efficiency factor, EF = speed (m/min) / average HR, i.e. meters
+    covered per heartbeat. Higher EF or faster pace at the same HR means better aerobic
+    fitness. Rolling medians over `window` runs smooth out weather, terrain and fatigue.
+    """
+    columns = [
+        "id",
+        "start_date_local",
+        "name",
+        "distance",
+        "average_heartrate",
+        "pace",
+        "ef",
+        "rolling_pace",
+        "rolling_ef",
+    ]
+    if len(zones) < 2:
+        return pd.DataFrame(columns=columns)
+    lo, hi = zones[1]
+    hi = math.inf if hi == -1 else hi
+    runs = _valid_runs(activities)
+    hr = runs["average_heartrate"]
+    keep = (runs["moving_time_s"] >= min_minutes * 60) & (hr >= lo) & (hr < hi)
+    if road_only and "sport_type" in runs:
+        keep &= runs["sport_type"] != "TrailRun"
+    runs = runs[keep].sort_values("start_date_local")
+    if runs.empty:
+        return pd.DataFrame(columns=columns)
+    per_unit = METERS_PER_UNIT[units]
+    speed = runs["distance_m"] / (runs["moving_time_s"] / 60)  # m/min
+    out = pd.DataFrame(
+        {
+            "id": runs["id"],
+            "start_date_local": runs["start_date_local"],
+            "name": runs["name"],
+            "distance": runs["distance_m"] / per_unit,
+            "average_heartrate": runs["average_heartrate"],
+            "pace": per_unit / speed,
+            "ef": speed / runs["average_heartrate"],
+        }
+    )
+    out["rolling_pace"] = out["pace"].rolling(window, min_periods=1).median()
+    out["rolling_ef"] = out["ef"].rolling(window, min_periods=1).median()
+    return out.reset_index(drop=True)[columns]
+
+
 # ---------------------------------------------------------------------------
 # Training load and acute:chronic workload ratio
 # ---------------------------------------------------------------------------

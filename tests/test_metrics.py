@@ -345,3 +345,154 @@ def test_race_predictions_table():
     assert five_k["vdot_time_s"] == pytest.approx(1197, abs=30)
     assert five_k["riegel_time_s"] == pytest.approx(1197)
     assert (preds["vdot_time_s"].diff().dropna() > 0).all()
+
+
+# --- intensity distribution ---------------------------------------------------
+
+
+def zone_rows(rows):
+    """zone_time_by_activity-shaped frame from (date, zone, seconds) tuples."""
+    df = pd.DataFrame(rows, columns=["start_date_local", "zone", "seconds"])
+    df["start_date_local"] = pd.to_datetime(df["start_date_local"])
+    df["activity_id"] = range(len(df))
+    df["week_start"] = m.week_start(df["start_date_local"])
+    return df
+
+
+def test_intensity_distribution_groups_zones_by_week():
+    zt = zone_rows(
+        [
+            ("2024-03-04", 1, 1800),  # Mon: easy
+            ("2024-03-05", 2, 1800),  # easy
+            ("2024-03-06", 3, 600),  # moderate
+            ("2024-03-07", 4, 300),  # hard
+            ("2024-03-07", 5, 300),  # hard
+            ("2024-03-11", 2, 3600),  # next week, all easy
+        ]
+    )
+    out = m.intensity_distribution(zt, "W")
+    assert out["period_start"].dt.strftime("%Y-%m-%d").tolist() == ["2024-03-04", "2024-03-11"]
+    first = out.iloc[0]
+    assert first["easy"] == pytest.approx(3600 / 4800)
+    assert first["moderate"] == pytest.approx(600 / 4800)
+    assert first["hard"] == pytest.approx(600 / 4800)
+    assert first["hours"] == pytest.approx(4800 / 3600)
+    assert out.iloc[1][["easy", "moderate", "hard"]].tolist() == [1, 0, 0]
+
+
+def test_intensity_distribution_by_month_and_min_hours():
+    zt = zone_rows([("2024-03-04", 2, 1800), ("2024-03-28", 3, 1800), ("2024-04-02", 1, 600)])
+    out = m.intensity_distribution(zt, "M", min_hours=0.5)
+    assert out["period_start"].dt.strftime("%Y-%m").tolist() == ["2024-03"]  # April < 30 min
+    assert out.iloc[0]["easy"] == pytest.approx(0.5)
+
+
+def test_intensity_distribution_empty_and_bad_freq():
+    empty = m.zone_time_by_activity(pd.DataFrame(), pd.DataFrame(), [])
+    assert m.intensity_distribution(empty).empty
+    with pytest.raises(ValueError):
+        m.intensity_distribution(empty, "D")
+
+
+# --- aerobic efficiency ---------------------------------------------------------
+
+ZONES = [(0, 130), (130, 150), (150, 170), (170, -1)]
+
+
+def test_aerobic_efficiency_selects_steady_zone2_road_runs():
+    acts = frame(
+        [
+            # 10 km in 50 min at 140 bpm: zone 2, kept
+            {
+                "id": 1,
+                "start_date_local": "2024-03-01",
+                "distance_m": 10000,
+                "moving_time_s": 3000,
+                "average_heartrate": 140.0,
+                "sport_type": "Run",
+            },
+            # too hard (zone 3)
+            {
+                "id": 2,
+                "start_date_local": "2024-03-02",
+                "distance_m": 10000,
+                "moving_time_s": 2700,
+                "average_heartrate": 160.0,
+                "sport_type": "Run",
+            },
+            # too short
+            {
+                "id": 3,
+                "start_date_local": "2024-03-03",
+                "distance_m": 2000,
+                "moving_time_s": 600,
+                "average_heartrate": 140.0,
+                "sport_type": "Run",
+            },
+            # trail
+            {
+                "id": 4,
+                "start_date_local": "2024-03-04",
+                "distance_m": 10000,
+                "moving_time_s": 3600,
+                "average_heartrate": 140.0,
+                "sport_type": "TrailRun",
+            },
+            # no HR
+            {
+                "id": 5,
+                "start_date_local": "2024-03-05",
+                "distance_m": 10000,
+                "moving_time_s": 3000,
+                "average_heartrate": None,
+                "sport_type": "Run",
+            },
+            # faster at the same HR
+            {
+                "id": 6,
+                "start_date_local": "2024-03-06",
+                "distance_m": 10000,
+                "moving_time_s": 2880,
+                "average_heartrate": 140.0,
+                "sport_type": "Run",
+            },
+        ]
+    )
+    out = m.aerobic_efficiency(acts, ZONES, "km", window=2)
+    assert out["id"].tolist() == [1, 6]
+    assert out["pace"].tolist() == pytest.approx([5.0, 4.8])
+    assert out["ef"].tolist() == pytest.approx([200 / 140, (10000 / 48) / 140])
+    assert out["rolling_ef"].iloc[-1] == pytest.approx(out["ef"].mean())
+    with_trail = m.aerobic_efficiency(acts, ZONES, "km", road_only=False)
+    assert with_trail["id"].tolist() == [1, 4, 6]
+
+
+def test_aerobic_efficiency_without_sport_type_or_zones():
+    acts = frame(
+        [
+            {
+                "id": 1,
+                "start_date_local": "2024-03-01",
+                "distance_m": 10000,
+                "moving_time_s": 3000,
+                "average_heartrate": 140.0,
+            }
+        ]
+    )
+    assert m.aerobic_efficiency(acts, ZONES)["id"].tolist() == [1]
+    assert m.aerobic_efficiency(acts, [(0, -1)]).empty
+
+
+def test_aerobic_efficiency_open_ended_zone2():
+    acts = frame(
+        [
+            {
+                "id": 1,
+                "start_date_local": "2024-03-01",
+                "distance_m": 10000,
+                "moving_time_s": 3000,
+                "average_heartrate": 199.0,
+            }
+        ]
+    )
+    assert len(m.aerobic_efficiency(acts, [(0, 130), (130, -1)])) == 1

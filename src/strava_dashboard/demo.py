@@ -21,11 +21,11 @@ MAX_HR = 190
 
 # weekday -> (kind, base distance km, base pace min/km, avg HR)
 WEEKLY_PLAN = {
-    1: ("Tempo", 8.0, 4.9, 165),
-    2: ("Easy", 6.0, 5.9, 142),
-    3: ("Intervals", 9.0, 5.1, 160),
-    5: ("Easy", 7.0, 5.8, 145),
-    6: ("Long run", 16.0, 5.7, 150),
+    1: ("Tempo", 8.0, 4.9, 157),
+    2: ("Easy", 6.0, 5.9, 122),
+    3: ("Intervals", 9.0, 5.1, 147),
+    5: ("Easy", 7.0, 5.8, 123),
+    6: ("Long run", 16.0, 5.7, 125),
 }
 
 

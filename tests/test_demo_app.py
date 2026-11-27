@@ -39,5 +39,5 @@ def test_hosted_demo_renders_with_banner(monkeypatch):
     at = AppTest.from_file(str(ROOT / "streamlit_app.py"), default_timeout=90).run()
     assert not at.exception, at.exception
     assert "synthetic data" in at.info[0].value
-    assert len(at.tabs) == 5
+    assert len(at.tabs) == 6
     assert (ROOT / "data" / "demo.duckdb").exists()

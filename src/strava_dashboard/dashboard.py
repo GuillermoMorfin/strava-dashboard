@@ -204,8 +204,153 @@ def zones_tab(
             .properties(height=260)
         )
         chart(stacked)
+
+    intensity_trend(long)
     with st.expander("Table"):
         st.dataframe(totals.round(3), hide_index=True, width="stretch")
+
+
+INTENSITY_LABELS = {"easy": "Easy (Z1–2)", "moderate": "Moderate (Z3)", "hard": "Hard (Z4–5)"}
+
+
+def intensity_trend(zone_time: pd.DataFrame) -> None:
+    head, toggle = st.columns([3, 1])
+    head.markdown("**Easy vs hard over time**")
+    by = toggle.radio("Group by", ["Week", "Month"], horizontal=True, key="intensity_freq")
+    dist = m.intensity_distribution(zone_time, freq=by[0])
+    if dist.empty:
+        st.info("Not enough heart-rate data yet (needs at least 30 minutes per period).")
+        return
+    lines = dist.melt(
+        id_vars=["period_start", "hours"], value_vars=list(INTENSITY_LABELS), var_name="level"
+    )
+    lines["level"] = lines["level"].map(INTENSITY_LABELS)
+    color = alt.Color(
+        "level:N",
+        title=None,
+        scale=alt.Scale(domain=list(INTENSITY_LABELS.values()), range=[SERIES, SERIES_2, MUTED]),
+        legend=alt.Legend(orient="top"),
+    )
+    period_title = "Week of" if by == "Week" else "Month"
+    period_format = "%b %d, %Y" if by == "Week" else "%B %Y"
+    trend = (
+        alt.Chart(lines)
+        .mark_line(strokeWidth=2, point=alt.OverlayMarkDef(size=25))
+        .encode(
+            x=alt.X("period_start:T", title=None),
+            y=alt.Y(
+                "value:Q",
+                title="Share of HR time",
+                axis=alt.Axis(format="%"),
+                scale=alt.Scale(domain=[0, 1]),
+            ),
+            color=color,
+            tooltip=[
+                alt.Tooltip("period_start:T", title=period_title, format=period_format),
+                alt.Tooltip("level:N", title="Intensity"),
+                alt.Tooltip("value:Q", title="Share", format=".0%"),
+                alt.Tooltip("hours:Q", title="Hours of HR data", format=".1f"),
+            ],
+        )
+    )
+    target = (
+        alt.Chart(pd.DataFrame({"y": [0.8]}))
+        .mark_rule(strokeDash=[4, 4], color=MUTED)
+        .encode(y="y:Q")
+    )
+    label = target.mark_text(align="left", dx=4, dy=-6, color=MUTED, text="80% easy").encode(
+        x=alt.value(0)
+    )
+    chart((target + label + trend).properties(height=260))
+    st.caption(
+        "Most endurance plans aim for roughly 80% of time easy. Watch the moderate (Z3) line: "
+        "easy runs drifting into Z3 add fatigue without much extra benefit. Shares only cover "
+        "runs with heart-rate detail; periods with under 30 minutes of it are hidden."
+    )
+
+
+def efficiency_tab(
+    activities: pd.DataFrame, zones: m.Zones, units: str, start: pd.Timestamp
+) -> None:
+    lo, hi = zones[1]
+    left, right = st.columns([3, 2])
+    road_only = left.checkbox("Road runs only (trail runs distort pace)", value=True)
+    window = right.slider("Rolling median window (runs)", 3, 30, 10, key="ef_window")
+    eff = m.aerobic_efficiency(activities, zones, units, road_only=road_only, window=window)
+    eff = eff[eff["start_date_local"] >= start]
+    if eff.empty:
+        st.info(f"No runs of 20+ minutes with an average heart rate in zone 2 ({lo}–{hi} bpm).")
+        return
+    st.markdown(
+        f"Steady runs of 20+ minutes whose **average heart rate was in zone 2** "
+        f"({lo}–{hi} bpm). {len(eff)} runs in this period."
+    )
+    eff = eff.assign(
+        pace_label=eff["pace"].map(m.format_pace),
+        rolling_label=eff["rolling_pace"].map(m.format_pace),
+    )
+    base = alt.Chart(eff).encode(x=alt.X("start_date_local:T", title=None))
+    run_tooltip = [
+        alt.Tooltip("start_date_local:T", title="Date", format="%b %d, %Y"),
+        alt.Tooltip("name:N", title="Run"),
+        alt.Tooltip("distance:Q", title=f"Distance ({units})", format=".1f"),
+        alt.Tooltip("pace_label:N", title="Pace"),
+        alt.Tooltip("average_heartrate:Q", title="Avg HR", format=".0f"),
+        alt.Tooltip("ef:Q", title="Efficiency factor", format=".2f"),
+    ]
+
+    lo_p, hi_p = eff["pace"].quantile([0.01, 0.99])
+    pace_scale = alt.Scale(reverse=True, domain=[hi_p + 0.25, lo_p - 0.25], clamp=True)
+    pace_y = alt.Y(
+        "pace:Q",
+        title=f"Pace (min/{units}), faster is higher",
+        scale=pace_scale,
+        axis=alt.Axis(labelExpr=PACE_AXIS),
+    )
+    st.markdown("**Zone 2 pace**")
+    chart(
+        (
+            base.mark_circle(size=40, color=MUTED, opacity=0.55).encode(
+                y=pace_y, tooltip=run_tooltip
+            )
+            + base.mark_line(color=SERIES, strokeWidth=2).encode(
+                y=alt.Y("rolling_pace:Q", scale=pace_scale),
+                tooltip=[
+                    alt.Tooltip("start_date_local:T", title="Date", format="%b %d, %Y"),
+                    alt.Tooltip("rolling_label:N", title=f"Rolling median ({window} runs)"),
+                ],
+            )
+        ).properties(height=260)
+    )
+
+    st.markdown("**Efficiency factor** (meters per minute ÷ average HR)")
+    lo_e, hi_e = eff["ef"].quantile([0.01, 0.99])
+    ef_scale = alt.Scale(domain=[lo_e * 0.97, hi_e * 1.03], clamp=True, zero=False)
+    chart(
+        (
+            base.mark_circle(size=40, color=MUTED, opacity=0.55).encode(
+                y=alt.Y("ef:Q", title="Meters per heartbeat", scale=ef_scale),
+                tooltip=run_tooltip,
+            )
+            + base.mark_line(color=SERIES, strokeWidth=2).encode(
+                y=alt.Y("rolling_ef:Q", scale=ef_scale),
+                tooltip=[
+                    alt.Tooltip("start_date_local:T", title="Date", format="%b %d, %Y"),
+                    alt.Tooltip(
+                        "rolling_ef:Q", title=f"Rolling median ({window} runs)", format=".2f"
+                    ),
+                ],
+            )
+        ).properties(height=220)
+    )
+    first, last = eff["rolling_ef"].iloc[[min(window, len(eff)) - 1, -1]]
+    change = last / first - 1
+    st.caption(
+        f"Efficiency factor {'up' if change >= 0 else 'down'} {abs(change):.1%} over this period "
+        "(rolling median). Pace alone can improve just because you ran a bit harder; the "
+        "efficiency factor divides by heart rate, so it shows whether the same effort moves you "
+        "further. Heat, hills, wind and fatigue all lower it, so look at the trend over weeks."
+    )
 
 
 def load_tab(acwr_df: pd.DataFrame, loads: pd.DataFrame, method: str, start: pd.Timestamp):
@@ -424,7 +569,16 @@ def main() -> None:
     else:
         k4.metric("Predicted 5K / half", "–")
 
-    tabs = st.tabs(["Weekly mileage", "Pace", "HR zones", "Training load", "Race predictions"])
+    tabs = st.tabs(
+        [
+            "Weekly mileage",
+            "Pace",
+            "HR zones",
+            "Aerobic efficiency",
+            "Training load",
+            "Race predictions",
+        ]
+    )
     with tabs[0]:
         weekly_tab(activities, units, start)
     with tabs[1]:
@@ -432,8 +586,10 @@ def main() -> None:
     with tabs[2]:
         zones_tab(activities, streams, zones, zones_note, start)
     with tabs[3]:
-        load_tab(acwr_df, loads, load_method, start)
+        efficiency_tab(activities, zones, units, start)
     with tabs[4]:
+        load_tab(acwr_df, loads, load_method, start)
+    with tabs[5]:
         races_tab(effort, units, lookback)
 
     st.caption(

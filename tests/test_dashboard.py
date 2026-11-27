@@ -34,13 +34,15 @@ def test_renders_all_tabs_with_demo_data(monkeypatch, demo_db):
         "Weekly mileage",
         "Pace",
         "HR zones",
+        "Aerobic efficiency",
         "Training load",
         "Race predictions",
     ]
     metrics = {mt.label: mt.value for mt in at.metric}
     assert metrics["Acute : chronic ratio"] != "–"
     assert "/" in metrics["Predicted 5K / half"]
-    assert len(at.get("vega_lite_chart")) == 6  # weekly, pace, 2x zones, 2x load
+    # weekly, pace, 2x zones + intensity trend, 2x efficiency, 2x load
+    assert len(at.get("vega_lite_chart")) == 9
 
 
 @pytest.mark.parametrize("load_method", ["trimp", "distance", "duration"])
@@ -85,3 +87,10 @@ def test_glitchy_recorded_max_hr_does_not_crash(monkeypatch, tmp_path):
     at = run_app(monkeypatch, path)
     assert not at.exception, at.exception
     assert at.sidebar.number_input[0].value == 120
+
+
+def test_intensity_by_month_and_trail_toggle(monkeypatch, demo_db):
+    at = run_app(monkeypatch, demo_db)
+    at.radio(key="intensity_freq").set_value("Month").run()
+    at.checkbox[0].uncheck().run()
+    assert not at.exception, at.exception
