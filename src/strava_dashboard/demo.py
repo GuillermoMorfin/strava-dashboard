@@ -7,7 +7,9 @@ race, with fitness slowly improving over time.
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
 
 import duckdb
 import numpy as np
@@ -98,3 +100,26 @@ def generate_demo(
     for activity_id, t, h in streams:
         db.save_hr_stream(con, activity_id, t, h)
     return len(activities)
+
+
+def ensure_fresh_demo(path: Path, today: date | None = None) -> bool:
+    """(Re)build the demo database at `path` unless it was already built today.
+
+    The synthetic runs end on the day they're generated, so a long-running hosted
+    demo regenerates daily to keep "Last 12 weeks" populated. The new file is
+    written next to the old one and swapped in, so readers never see half a file.
+    Returns True if the database was (re)generated.
+    """
+    today = today or date.today()
+    if path.exists() and date.fromtimestamp(path.stat().st_mtime) >= today:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.unlink(missing_ok=True)
+    con = db.connect(tmp)
+    try:
+        generate_demo(con, end=today)
+    finally:
+        con.close()
+    os.replace(tmp, path)
+    return True

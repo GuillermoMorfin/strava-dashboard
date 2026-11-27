@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import timedelta
 
 import altair as alt
@@ -11,9 +12,9 @@ import streamlit as st
 
 from strava_dashboard import db
 from strava_dashboard import metrics as m
-from strava_dashboard.config import Settings
+from strava_dashboard.config import MAX_HR_RANGE, ConfigError, Settings
 
-# Palette (see README "Design notes"): one series hue, an ordinal ramp for HR
+# Palette: one series hue, an ordinal ramp for HR
 # zones, a second categorical hue for chronic load, and reserved status colors.
 SERIES = "#2a78d6"
 SERIES_2 = "#eb6834"
@@ -321,10 +322,20 @@ def races_tab(effort: pd.Series | None, units: str, lookback: int) -> None:
 
 def main() -> None:
     st.set_page_config(page_title="Running dashboard", page_icon="🏃", layout="wide")
-    settings = Settings.from_env()
+    st.title("Running dashboard")
+    try:
+        settings = Settings.from_env()
+    except ConfigError as exc:
+        st.error(f"Check your `.env` file: {exc}")
+        st.stop()
     path = settings.db_path
 
-    st.title("Running dashboard")
+    if os.environ.get("STRAVA_DEMO_MODE"):
+        st.info(
+            "**Live demo with synthetic data.** These ~200 days of runs are generated, not "
+            "real. Run it locally and connect your own Strava account to see yours: "
+            "[GitHub repo](https://github.com/GuillermoMorfin/strava-dashboard)."
+        )
     if not path.exists():
         st.info(
             f"No database at `{path}` yet. Run `strava-dash auth` then `strava-dash sync`, "
@@ -355,7 +366,9 @@ def main() -> None:
         lookback = st.slider("Race prediction lookback (days)", 30, 365, 90, step=15)
         st.subheader("Heart rate")
         default_max = settings.max_hr or (int(observed_max) if pd.notna(observed_max) else 190)
-        max_hr = st.number_input("Max HR", 120, 230, default_max)
+        # A GPS/strap glitch can record an impossible max; keep the input in range.
+        default_max = min(max(default_max, MAX_HR_RANGE[0]), MAX_HR_RANGE[1])
+        max_hr = st.number_input("Max HR", *MAX_HR_RANGE, default_max)
         resting_hr = st.number_input("Resting HR", 30, 100, settings.resting_hr)
 
     today = pd.Timestamp.now().normalize()

@@ -5,6 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "strava-dashboard"
 version = "0.1.0"
+license = "MIT"
 description = "Pull your Strava runs into DuckDB and explore them in a Streamlit dashboard."
 readme = "README.md"
 requires-python = ">=3.11"

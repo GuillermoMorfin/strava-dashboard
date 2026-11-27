@@ -56,3 +56,18 @@ def test_invalid_int(monkeypatch):
     monkeypatch.setenv("MAX_HR", "high")
     with pytest.raises(ConfigError, match="MAX_HR"):
         Settings.from_env(dotenv=False)
+
+
+@pytest.mark.parametrize(
+    ("max_hr", "resting", "match"),
+    [
+        ("44", "179", "RESTING_HR must be between"),
+        ("44", "60", "MAX_HR must be between .* got 44 \\(are MAX_HR and RESTING_HR swapped"),
+        ("250", "60", "MAX_HR must be between"),
+    ],
+)
+def test_implausible_heart_rates(monkeypatch, max_hr, resting, match):
+    monkeypatch.setenv("MAX_HR", max_hr)
+    monkeypatch.setenv("RESTING_HR", resting)
+    with pytest.raises(ConfigError, match=match):
+        Settings.from_env(dotenv=False)

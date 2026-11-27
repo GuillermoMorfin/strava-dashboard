@@ -65,3 +65,23 @@ def test_empty_database_shows_instructions(monkeypatch, tmp_path):
     at = run_app(monkeypatch, path)
     assert not at.exception
     assert "No runs" in at.info[0].value
+
+
+def test_bad_heart_rate_settings_show_error(monkeypatch, demo_db):
+    monkeypatch.setenv("MAX_HR", "44")
+    monkeypatch.setenv("RESTING_HR", "179")
+    at = run_app(monkeypatch, demo_db)
+    assert not at.exception, at.exception
+    assert "RESTING_HR" in at.error[0].value
+
+
+def test_glitchy_recorded_max_hr_does_not_crash(monkeypatch, tmp_path):
+    path = tmp_path / "glitch.duckdb"
+    con = db.connect(path)
+    generate_demo(con)
+    con.execute("UPDATE activities SET max_heartrate = 44")
+    con.close()
+    monkeypatch.delenv("MAX_HR", raising=False)
+    at = run_app(monkeypatch, path)
+    assert not at.exception, at.exception
+    assert at.sidebar.number_input[0].value == 120

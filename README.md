@@ -1,7 +1,36 @@
 # strava-dashboard
 
+[![CI](https://github.com/GuillermoMorfin/strava-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/GuillermoMorfin/strava-dashboard/actions/workflows/ci.yml)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 Pull your running activities from the Strava API into a local DuckDB file and explore
-them in a Streamlit dashboard:
+them in a Streamlit dashboard.
+
+**[▶ Try the live demo](https://guillermomorfin-strava-dashboard.streamlit.app)** (synthetic data, nothing to install)
+
+![Dashboard overview: weekly mileage, headline metrics and settings](docs/overview.png)
+
+<table>
+  <tr>
+    <td><img src="docs/pace.png" alt="Pace trend with rolling median"><br><sub><b>Pace trend</b>: every run plus a rolling median</sub></td>
+    <td><img src="docs/hr-zones.png" alt="Time in heart-rate zones"><br><sub><b>HR zones</b>: time in zone from second-by-second heart rate</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/training-load.png" alt="Acute vs chronic training load"><br><sub><b>Training load</b>: acute vs chronic load and the ACWR</sub></td>
+    <td><img src="docs/race-predictions.png" alt="Race time predictions"><br><sub><b>Race predictions</b>: Daniels VDOT and Riegel</sub></td>
+  </tr>
+</table>
+
+## Why I built this
+
+I run, and I wanted more from my training data than Strava's built-in charts: how my weekly
+volume builds, how much time I really spend in each heart-rate zone, whether a week's load
+jumps too fast, and what recent efforts predict for race day. It was also a chance to build
+the full path myself, from an OAuth-protected API to a local database, tested metric code
+and an interactive dashboard.
+
+## What it does
 
 - **Weekly mileage**: distance, run count, hours and long run per week
 - **Pace trends**: every run plus a rolling median
@@ -10,6 +39,11 @@ them in a Streamlit dashboard:
 - **Race predictions**: 5K / 10K / half / marathon by Daniels VDOT and Riegel
 
 Everything runs locally. Your data and tokens never leave your machine except to talk to Strava.
+The [live demo](https://guillermomorfin-strava-dashboard.streamlit.app) only ever shows
+generated runs; it has no Strava connection.
+
+**Built with:** Python, Strava REST API (OAuth 2.0), httpx, DuckDB, pandas, Streamlit and
+Altair, pytest (HTTP mocked, ~90 tests), ruff, GitHub Actions CI.
 
 ## Quick start (no Strava account needed)
 
@@ -168,6 +202,7 @@ src/strava_dashboard/
   dashboard.py  Streamlit app
   demo.py       synthetic data generator
   cli.py        `strava-dash` command
+streamlit_app.py  entry point for the hosted demo (always synthetic data)
 tests/          pytest suite (HTTP mocked; dashboard smoke-tested with Streamlit AppTest)
 ```
 
@@ -184,6 +219,17 @@ You can query the data directly:
 ```bash
 duckdb data/strava.duckdb "SELECT date_trunc('month', start_date_local) m, round(sum(distance_m)/1609.344) mi FROM activities GROUP BY m ORDER BY m"
 ```
+
+## Hosted demo
+
+`streamlit_app.py` is the entry point used on Streamlit Community Cloud. It always serves
+synthetic data: on first load each day it regenerates `data/demo.duckdb` (so the charts end
+today) and runs the normal dashboard with a "synthetic data" banner. It never reads `.env`
+credentials or your real database. To try it locally: `streamlit run streamlit_app.py`.
+
+To deploy your own copy: fork the repo, then at <https://share.streamlit.io> create an app
+from your fork with main file `streamlit_app.py` and Python 3.11 or newer. `requirements.txt`
+installs the package. No secrets are needed.
 
 ## Development
 
@@ -212,3 +258,7 @@ dashboard headlessly against demo data.
 
 To disconnect the app, revoke it at <https://www.strava.com/settings/apps> and delete
 `.strava_tokens.json`.
+
+## License
+
+[MIT](LICENSE)
