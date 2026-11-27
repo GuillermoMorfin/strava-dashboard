@@ -41,3 +41,8 @@ def test_hosted_demo_renders_with_banner(monkeypatch):
     assert "synthetic data" in at.info[0].value
     assert len(at.tabs) == 6
     assert (ROOT / "data" / "demo.duckdb").exists()
+    captions = " ".join(c.value for c in at.caption)
+    assert "synthetic demo data" in captions
+    assert "data from" not in captions  # no server paths in the public demo
+    assert "Built by Guillermo Morfin" in captions
+    assert "Demo heart-rate zones" in captions

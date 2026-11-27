@@ -43,6 +43,8 @@ def test_renders_all_tabs_with_demo_data(monkeypatch, demo_db):
     assert "/" in metrics["Predicted 5K / half"]
     # weekly, pace, 2x zones + intensity trend, 2x efficiency, 2x load
     assert len(at.get("vega_lite_chart")) == 9
+    captions = " ".join(c.value for c in at.caption)
+    assert "data from" in captions and "Built by Guillermo Morfin" in captions
 
 
 @pytest.mark.parametrize("load_method", ["trimp", "distance", "duration"])

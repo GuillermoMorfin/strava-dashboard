@@ -22,6 +22,10 @@ MUTED = "#898781"
 ZONE_RAMP = ["#86b6ef", "#5598e7", "#2a78d6", "#1c5cab", "#184f95"]
 STATUS = {"Optimal": "#0ca30c", "Elevated": "#fab219", "High": "#d03b3b"}
 
+REPO_URL = "https://github.com/GuillermoMorfin/strava-dashboard"
+GITHUB_URL = "https://github.com/GuillermoMorfin"
+LINKEDIN_URL = "https://www.linkedin.com/in/guillermo-morfin-guerrero"
+
 PERIODS = {"Last 12 weeks": 84, "Last 6 months": 182, "Last year": 365, "All time": None}
 LOAD_LABELS = {
     "trimp": "TRIMP (heart rate)",
@@ -466,8 +470,8 @@ def races_tab(effort: pd.Series | None, units: str, lookback: int) -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Running dashboard", page_icon="🏃", layout="wide")
-    st.title("Running dashboard")
+    st.set_page_config(page_title="Strava Training Dashboard", page_icon="🏃", layout="wide")
+    st.title("Strava Training Dashboard")
     try:
         settings = Settings.from_env()
     except ConfigError as exc:
@@ -475,11 +479,12 @@ def main() -> None:
         st.stop()
     path = settings.db_path
 
-    if os.environ.get("STRAVA_DEMO_MODE"):
+    demo = bool(os.environ.get("STRAVA_DEMO_MODE"))
+    if demo:
         st.info(
             "**Live demo with synthetic data.** These ~200 days of runs are generated, not "
             "real. Run it locally and connect your own Strava account to see yours: "
-            "[GitHub repo](https://github.com/GuillermoMorfin/strava-dashboard)."
+            f"[GitHub repo]({REPO_URL})."
         )
     if not path.exists():
         st.info(
@@ -521,7 +526,12 @@ def main() -> None:
     start = today - timedelta(days=days) if days else activities["start_date_local"].min()
 
     if stored_zones:
-        zones, zones_note = stored_zones, "Heart-rate zones from your Strava profile."
+        zones = stored_zones
+        zones_note = (
+            "Demo heart-rate zones (synthetic athlete with a 190 bpm max)."
+            if demo
+            else "Heart-rate zones from your Strava profile."
+        )
     else:
         zones = m.default_hr_zones(int(max_hr))
         zones_note = f"Zones estimated at 60/70/80/90% of max HR ({int(max_hr)} bpm)."
@@ -592,10 +602,12 @@ def main() -> None:
     with tabs[5]:
         races_tab(effort, units, lookback)
 
+    source = "synthetic demo data" if demo else f"data from `{path}`"
     st.caption(
         f"{len(activities)} runs · last activity "
-        f"{activities['start_date_local'].max():%b %d, %Y} · data from `{path}`"
+        f"{activities['start_date_local'].max():%b %d, %Y} · {source}"
     )
+    st.caption(f"Built by Guillermo Morfin · [GitHub]({GITHUB_URL}) · [LinkedIn]({LINKEDIN_URL})")
 
 
 main()

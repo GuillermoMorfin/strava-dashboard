@@ -1,11 +1,11 @@
-# strava-dashboard
+# Strava Training Dashboard
 
 [![CI](https://github.com/GuillermoMorfin/strava-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/GuillermoMorfin/strava-dashboard/actions/workflows/ci.yml)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-Pull your running activities from the Strava API into a local DuckDB file and explore
-them in a Streamlit dashboard.
+Pull your running activities from the Strava API into a local DuckDB database and turn them
+into training insights in an interactive Streamlit dashboard.
 
 **[▶ Try the live demo](https://guillermomorfin-strava-dashboard.streamlit.app)** (synthetic data, nothing to install)
 
@@ -21,6 +21,20 @@ them in a Streamlit dashboard.
     <td><img src="docs/pace.png" alt="Pace trend with rolling median"><br><sub><b>Pace trend</b>: every run plus a rolling median</sub></td>
   </tr>
 </table>
+
+## What this project shows
+
+- **End-to-end data pipeline:** OAuth 2.0 login to the Strava API, incremental sync that
+  respects rate limits and resumes where it stopped, and storage in DuckDB.
+- **Analytics grounded in sports science:** time in heart-rate zones from second-by-second
+  data, 80/20 intensity balance, aerobic efficiency, training load (Banister TRIMP, acute:chronic
+  ratio) and race predictions, each with its assumptions and limits
+  [documented](#how-the-metrics-are-calculated).
+- **Tested, maintainable code:** ~100 automated tests (Strava API mocked, metrics checked
+  against published tables and hand calculations), linting and CI on every push.
+- **Shipped, privacy-first:** a deployed [live demo](https://guillermomorfin-strava-dashboard.streamlit.app)
+  runs on synthetic data, so anyone can try it without an account, while real training data
+  never leaves the runner's own machine.
 
 ## Why I built this
 
@@ -45,7 +59,7 @@ The [live demo](https://guillermomorfin-strava-dashboard.streamlit.app) only eve
 generated runs; it has no Strava connection.
 
 **Built with:** Python, Strava REST API (OAuth 2.0), httpx, DuckDB, pandas, Streamlit and
-Altair, pytest (HTTP mocked, ~90 tests), ruff, GitHub Actions CI.
+Altair, pytest, ruff, GitHub Actions, Streamlit Community Cloud.
 
 ## Quick start (no Strava account needed)
 
@@ -60,6 +74,9 @@ strava-dash dashboard --db data/demo.duckdb    # opens http://localhost:8501
 Requires Python 3.11+.
 
 ## Connecting your Strava account
+
+<details>
+<summary>Step-by-step setup: Strava API app, <code>.env</code>, authorization and sync</summary>
 
 ### 1. Create a Strava API application (one time)
 
@@ -130,7 +147,12 @@ streams cost one request each, so a first sync with years of history takes a few
 so if Strava returns `429`, everything fetched so far is kept and the next run continues
 from there.
 
+</details>
+
 ## Configuration
+
+<details>
+<summary>Environment variables</summary>
 
 Set these in `.env` or as environment variables.
 
@@ -146,7 +168,12 @@ Set these in `.env` or as environment variables.
 
 Units, max/resting HR, the period, and the load and ACWR models can also be changed in the dashboard sidebar.
 
+</details>
+
 ## How the metrics are calculated
+
+<details>
+<summary>Methodology for each metric, with assumptions and limits</summary>
 
 All metric code is in [`src/strava_dashboard/metrics.py`](src/strava_dashboard/metrics.py)
 as pure pandas functions.
@@ -203,7 +230,14 @@ default), ignoring implausible GPS speeds. It then predicts each distance two wa
 Predictions are only as good as the effort behind them. A recent race or hard time trial
 works best, and marathon predictions run optimistic without long-run training.
 
-## Project layout
+</details>
+
+## For developers
+
+<details>
+<summary>Project layout, database schema, hosted demo and tests</summary>
+
+### Project layout
 
 ```
 src/strava_dashboard/
@@ -234,7 +268,7 @@ You can query the data directly:
 duckdb data/strava.duckdb "SELECT date_trunc('month', start_date_local) m, round(sum(distance_m)/1609.344) mi FROM activities GROUP BY m ORDER BY m"
 ```
 
-## Hosted demo
+### Hosted demo
 
 `streamlit_app.py` is the entry point used on Streamlit Community Cloud. It always serves
 synthetic data: on first load each day it regenerates `data/demo.duckdb` (so the charts end
@@ -245,7 +279,7 @@ To deploy your own copy: fork the repo, then at <https://share.streamlit.io> cre
 from your fork with main file `streamlit_app.py` and Python 3.11 or newer. `requirements.txt`
 installs the package. No secrets are needed.
 
-## Development
+### Running the tests
 
 ```bash
 pip install -e ".[dev]"
@@ -257,7 +291,12 @@ Tests mock all HTTP with `httpx.MockTransport`, use in-memory DuckDB, check the 
 against known values (Daniels' VDOT tables, hand-computed TRIMP/ACWR), and render the
 dashboard headlessly against demo data.
 
+</details>
+
 ## Troubleshooting
+
+<details>
+<summary>Common problems and fixes</summary>
 
 | Problem | Fix |
 |---|---|
@@ -272,6 +311,8 @@ dashboard headlessly against demo data.
 
 To disconnect the app, revoke it at <https://www.strava.com/settings/apps> and delete
 `.strava_tokens.json`.
+
+</details>
 
 ## License
 
