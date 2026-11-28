@@ -93,48 +93,87 @@ def weekly_tab(activities: pd.DataFrame, units: str, start: pd.Timestamp) -> Non
         )
 
 
-def pace_tab(activities: pd.DataFrame, units: str, start: pd.Timestamp) -> None:
-    window = st.slider("Rolling median window (runs)", 3, 30, 10)
-    trend = m.pace_trend(activities, units, window=window)
-    trend = trend[trend["start_date_local"] >= start]
-    if trend.empty:
-        st.info("No runs in this period.")
+def pace_tab(activities: pd.DataFrame, zones: m.Zones, units: str, today: pd.Timestamp) -> None:
+    left, right = st.columns([2, 3])
+    months = left.radio(
+        "Compare the last",
+        [3, 6, 12],
+        index=1,
+        horizontal=True,
+        key="cmp_months",
+        format_func=lambda n: f"{n} months",
+    )
+    road_only = right.checkbox(
+        "Road runs only for pace (trail runs distort it)", value=True, key="cmp_road"
+    )
+    cmp = m.period_comparison(
+        activities, today, months=months, years=3, units=units, zones=zones, road_only=road_only
+    )
+    if cmp["runs"].iloc[0] == 0:
+        st.info(f"No runs in the last {months} months.")
         return
-    trend = trend.assign(
-        pace_label=trend["pace"].map(m.format_pace),
-        rolling_label=trend["rolling_pace"].map(m.format_pace),
+    st.markdown(f"**{m.comparison_summary(cmp, units)}**")
+
+    order = list(reversed(cmp["label"]))  # oldest first, so time reads left to right
+    points = cmp.melt(id_vars=["label"], value_vars=["avg_pace", "z2_pace"], var_name="series")
+    points = points.dropna(subset=["value"]).assign(
+        series=lambda d: d["series"].map({"avg_pace": "Average pace", "z2_pace": "Zone 2 pace"}),
+        pace_label=lambda d: d["value"].map(m.format_pace),
     )
-    lo, hi = trend["pace"].quantile([0.01, 0.99])
-    pace_title = f"Pace (min/{units}), faster is higher"
-    pace_scale = alt.Scale(reverse=True, domain=[hi + 0.25, lo - 0.25], clamp=True)
-    y = alt.Y(
-        "pace:Q",
-        title=pace_title,
-        scale=pace_scale,
-        axis=alt.Axis(labelExpr=PACE_AXIS),
-    )
-    base = alt.Chart(trend).encode(x=alt.X("start_date_local:T", title=None))
-    points = base.mark_circle(size=40, color=MUTED, opacity=0.55).encode(
-        y=y,
+    lo, hi = points["value"].min(), points["value"].max()
+    pace_scale = alt.Scale(reverse=True, domain=[hi + 0.15, lo - 0.15])
+    base = alt.Chart(points).encode(
+        x=alt.X("label:N", sort=order, title=None, axis=alt.Axis(labelAngle=0)),
+        y=alt.Y(
+            "value:Q",
+            title=f"Pace (min/{units}), faster is higher",
+            scale=pace_scale,
+            axis=alt.Axis(labelExpr=PACE_AXIS),
+        ),
+        color=alt.Color(
+            "series:N",
+            title=None,
+            scale=alt.Scale(domain=["Average pace", "Zone 2 pace"], range=[SERIES, SERIES_2]),
+            legend=alt.Legend(orient="top"),
+        ),
         tooltip=[
-            alt.Tooltip("start_date_local:T", title="Date", format="%b %d, %Y"),
-            alt.Tooltip("name:N", title="Run"),
-            alt.Tooltip("distance:Q", title=f"Distance ({units})", format=".2f"),
+            alt.Tooltip("label:N", title="Period"),
+            alt.Tooltip("series:N", title="Measure"),
             alt.Tooltip("pace_label:N", title="Pace"),
-            alt.Tooltip("average_heartrate:Q", title="Avg HR", format=".0f"),
         ],
     )
-    line = base.mark_line(color=SERIES, strokeWidth=2).encode(
-        y=alt.Y("rolling_pace:Q", scale=pace_scale, title=pace_title),
-        tooltip=[
-            alt.Tooltip("start_date_local:T", title="Date", format="%b %d, %Y"),
-            alt.Tooltip("rolling_label:N", title=f"Rolling median ({window} runs)"),
-        ],
+    chart(
+        (
+            base.mark_line(strokeWidth=2)
+            + base.mark_circle(size=90, opacity=1)
+            + base.mark_text(dy=-14, fontSize=13).encode(text="pace_label:N")
+        ).properties(height=300)
     )
-    chart((points + line).properties(height=340))
+
+    table = pd.DataFrame(
+        {
+            "Period": cmp["label"],
+            "Dates": [
+                f"{a:%b %d, %Y} – {b:%b %d, %Y}"
+                for a, b in zip(cmp["start"], cmp["end"], strict=True)
+            ],
+            "Runs": cmp["runs"],
+            f"{units} per week": cmp["distance_per_week"].round(1),
+            "Average pace": cmp["avg_pace"].map(m.format_pace),
+            "Zone 2 pace": [
+                f"{m.format_pace(p)} ({n} runs)" if n else "–"
+                for p, n in zip(cmp["z2_pace"], cmp["z2_runs"], strict=True)
+            ],
+            f"Longest run ({units})": cmp["long_run"].round(1),
+        }
+    )
+    st.dataframe(table, hide_index=True, width="stretch")
     st.caption(
-        f"Grey dots are individual runs; the blue line is the median of the last {window}. "
-        "Pace is moving time ÷ distance, so it includes easy runs and workouts alike."
+        "The same months in each year, so seasons line up. Average pace is total time ÷ total "
+        "distance, so it moves with how many easy runs, workouts and races you did. Zone 2 pace "
+        "(median of steady runs of 20+ minutes whose average heart rate was in zone 2) compares "
+        "runs at the same effort, so it's the fairer measure of fitness. Today's heart-rate zones "
+        "are applied to earlier years."
     )
 
 
@@ -278,7 +317,7 @@ def efficiency_tab(
 ) -> None:
     lo, hi = zones[1]
     left, right = st.columns([3, 2])
-    road_only = left.checkbox("Road runs only (trail runs distort pace)", value=True)
+    road_only = left.checkbox("Road runs only (trail runs distort pace)", value=True, key="ef_road")
     window = right.slider("Rolling median window (runs)", 3, 30, 10, key="ef_window")
     eff = m.aerobic_efficiency(activities, zones, units, road_only=road_only, window=window)
     eff = eff[eff["start_date_local"] >= start]
@@ -357,7 +396,28 @@ def efficiency_tab(
     )
 
 
-def load_tab(acwr_df: pd.DataFrame, loads: pd.DataFrame, method: str, start: pd.Timestamp):
+DIAGNOSIS_BOX = {"High": st.error, "Elevated": st.warning, "Optimal": st.success, "Low": st.info}
+
+
+def diagnosis_box(diagnosis: dict) -> None:
+    """The ratio's band, the likely causes and what to do, in one coloured box."""
+    band = diagnosis["band"]
+    parts = [f"**{diagnosis['summary']}**"] if diagnosis["summary"] else []
+    if diagnosis["reasons"]:
+        heading = "Worth knowing:" if band == "Optimal" else "Why:"
+        parts.append(heading + "\n" + "\n".join(f"- {reason}" for reason in diagnosis["reasons"]))
+    parts.append(f"**What to do:** {diagnosis['advice']}")
+    DIAGNOSIS_BOX.get(band, st.info)("\n\n".join(parts))
+
+
+def load_tab(
+    acwr_df: pd.DataFrame,
+    loads: pd.DataFrame,
+    method: str,
+    start: pd.Timestamp,
+    diagnosis: dict,
+):
+    diagnosis_box(diagnosis)
     shown = acwr_df[acwr_df.index >= start].reset_index()
     if shown.empty:
         st.info("No training load in this period.")
@@ -482,7 +542,7 @@ def main() -> None:
     demo = bool(os.environ.get("STRAVA_DEMO_MODE"))
     if demo:
         st.info(
-            "**Live demo with synthetic data.** These ~200 days of runs are generated, not "
+            "**Live demo with synthetic data.** These ~2.5 years of runs are generated, not "
             "real. Run it locally and connect your own Strava account to see yours: "
             f"[GitHub repo]({REPO_URL})."
         )
@@ -541,6 +601,7 @@ def main() -> None:
         activities, load_method, units=units, max_hr=max_hr, resting_hr=resting_hr
     )
     acwr_df = m.acwr(m.daily_load(loads, end=today), acwr_method)
+    diagnosis = m.load_diagnosis(activities, acwr_df, units=units, method=acwr_method)
     effort = m.best_effort(activities, as_of=pd.Timestamp.now(), lookback_days=lookback)
 
     weekly = m.weekly_distance(activities, units).set_index("week_start")
@@ -582,7 +643,7 @@ def main() -> None:
     tabs = st.tabs(
         [
             "Weekly mileage",
-            "Pace",
+            "Pace over the years",
             "HR zones",
             "Aerobic efficiency",
             "Training load",
@@ -592,13 +653,13 @@ def main() -> None:
     with tabs[0]:
         weekly_tab(activities, units, start)
     with tabs[1]:
-        pace_tab(activities, units, start)
+        pace_tab(activities, zones, units, today)
     with tabs[2]:
         zones_tab(activities, streams, zones, zones_note, start)
     with tabs[3]:
         efficiency_tab(activities, zones, units, start)
     with tabs[4]:
-        load_tab(acwr_df, loads, load_method, start)
+        load_tab(acwr_df, loads, load_method, start, diagnosis)
     with tabs[5]:
         races_tab(effort, units, lookback)
 

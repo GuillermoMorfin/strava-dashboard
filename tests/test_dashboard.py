@@ -32,7 +32,7 @@ def test_renders_all_tabs_with_demo_data(monkeypatch, demo_db):
     assert not at.exception, at.exception
     assert [t.label for t in at.tabs] == [
         "Weekly mileage",
-        "Pace",
+        "Pace over the years",
         "HR zones",
         "Aerobic efficiency",
         "Training load",
@@ -94,5 +94,21 @@ def test_glitchy_recorded_max_hr_does_not_crash(monkeypatch, tmp_path):
 def test_intensity_by_month_and_trail_toggle(monkeypatch, demo_db):
     at = run_app(monkeypatch, demo_db)
     at.radio(key="intensity_freq").set_value("Month").run()
-    at.checkbox[0].uncheck().run()
+    at.checkbox(key="ef_road").uncheck().run()
+    assert not at.exception, at.exception
+
+
+def test_pace_comparison_and_load_diagnosis(monkeypatch, demo_db):
+    at = run_app(monkeypatch, demo_db)
+    headline = " ".join(md.value for md in at.markdown)
+    assert "Average pace over the last 6 months was" in headline
+    assert "1 year ago" in headline and "2 years ago" in headline
+    boxes = [
+        el.value for kind in ("success", "warning", "error", "info") for el in getattr(at, kind)
+    ]
+    assert any("What to do:" in box for box in boxes)
+    for months in (3, 12):
+        at.radio(key="cmp_months").set_value(months).run()
+        assert not at.exception, at.exception
+    at.checkbox(key="cmp_road").uncheck().run()
     assert not at.exception, at.exception

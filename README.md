@@ -18,7 +18,7 @@ into training insights in an interactive Streamlit dashboard.
   </tr>
   <tr>
     <td><img src="docs/training-load.png" alt="Acute vs chronic training load"><br><sub><b>Training load</b>: acute vs chronic load and the ACWR</sub></td>
-    <td><img src="docs/pace.png" alt="Pace trend with rolling median"><br><sub><b>Pace trend</b>: every run plus a rolling median</sub></td>
+    <td><img src="docs/pace.png" alt="Average and zone 2 pace, last 6 months vs the same months 1 and 2 years ago"><br><sub><b>Pace over the years</b>: the same months this year, 1 year ago and 2 years ago</sub></td>
   </tr>
 </table>
 
@@ -27,10 +27,13 @@ into training insights in an interactive Streamlit dashboard.
 - **End-to-end data pipeline:** OAuth 2.0 login to the Strava API, incremental sync that
   respects rate limits and resumes where it stopped, and storage in DuckDB.
 - **Analytics grounded in sports science:** time in heart-rate zones from second-by-second
-  data, 80/20 intensity balance, aerobic efficiency, training load (Banister TRIMP, acute:chronic
-  ratio) and race predictions, each with its assumptions and limits
+  data, 80/20 intensity balance, aerobic efficiency, year-over-year pace, training load (Banister
+  TRIMP, acute:chronic ratio) and race predictions, each with its assumptions and limits
   [documented](#how-the-metrics-are-calculated).
-- **Tested, maintainable code:** ~100 automated tests (Strava API mocked, metrics checked
+- **Insights, not just charts:** the dashboard says in plain words what changed and why, e.g.
+  "20 s/km faster at the same effort than a year ago", or "elevated load: 3 days in a row, and
+  Thursday was a hard session".
+- **Tested, maintainable code:** ~110 automated tests (Strava API mocked, metrics checked
   against published tables and hand calculations), linting and CI on every push.
 - **Shipped, privacy-first:** a deployed [live demo](https://guillermomorfin-strava-dashboard.streamlit.app)
   runs on synthetic data, so anyone can try it without an account, while real training data
@@ -47,11 +50,12 @@ and an interactive dashboard.
 ## What it does
 
 - **Weekly mileage**: distance, run count, hours and long run per week
-- **Pace trends**: every run plus a rolling median
+- **Pace over the years**: average pace and zone 2 pace for the last 3, 6 or 12 months against the same months 1 and 2 years ago
 - **Heart-rate zone distribution**: time in zone overall and per week, from second-by-second HR streams
 - **Easy vs hard over time**: weekly or monthly share of easy (Z1–2), moderate (Z3) and hard (Z4–5) time against an 80% easy target
 - **Aerobic efficiency**: pace and efficiency factor (meters per heartbeat) on steady zone 2 runs, to see whether your base is improving
-- **Acute:chronic training load**: TRIMP, distance or duration load with EWMA or rolling ACWR
+- **Acute:chronic training load**: TRIMP, distance or duration load with EWMA or rolling ACWR,
+  plus a plain-words diagnosis of why the ratio is where it is and what to do
 - **Race predictions**: 5K / 10K / half / marathon by Daniels VDOT and Riegel
 
 Everything runs locally. Your data and tokens never leave your machine except to talk to Strava.
@@ -67,7 +71,7 @@ Altair, pytest, ruff, GitHub Actions, Streamlit Community Cloud.
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-strava-dash demo                               # ~200 days of synthetic runs → data/demo.duckdb
+strava-dash demo                               # ~2.5 years of synthetic runs → data/demo.duckdb
 strava-dash dashboard --db data/demo.duckdb    # opens http://localhost:8501
 ```
 
@@ -181,9 +185,13 @@ as pure pandas functions.
 **Weekly mileage.** Runs are grouped by Monday-start week using the run's *local* start
 time, and empty weeks show as zero.
 
-**Pace.** Moving time ÷ distance for each run of 1 km or more, plus a rolling median over
-the last *N* runs (10 by default). The median keeps one race or one recovery jog from
-swinging the trend.
+**Pace over the years.** The same window (3, 6 or 12 months up to today) is compared with
+the same months 1 and 2 years earlier, so seasons line up. *Average pace* is total moving time
+÷ total distance of the window's road runs (trail runs are left out by default), so long runs
+count more than short ones, and it moves with the mix of easy runs, workouts and races.
+*Zone 2 pace* is the median pace of steady runs of 20+ minutes whose average HR was in zone 2:
+it compares runs at the same effort, so it's the fairer measure of fitness. Today's zones are
+applied to earlier years. Volume (runs, distance per week, longest run) counts every run.
 
 **HR zones.** Time in zone comes from the per-second HR stream: each interval between
 samples is credited to the zone of its starting sample, and gaps over 30 s (pauses) are
@@ -212,13 +220,22 @@ today's zones applied to older runs, so read it as a trend over weeks rather tha
 
 **Acute:chronic workload ratio.** Daily load (rest days count as 0) feeds two models:
 - *EWMA* (default): exponentially weighted means with α = 2/(N+1) for 7 and 28 days
-  (Williams et al., 2017). This model reacts more smoothly than rolling sums.
+  (Williams et al., 2017). Recent days weigh most, so the ratio reacts quickly to the last
+  few days (three runs in a row can lift it into "elevated", and one rest day can bring it
+  back), and there's no sudden drop when a big day leaves a rolling window.
 - *Rolling*: plain 7-day ÷ 28-day means.
 
 The ratio stays blank until 28 days of history exist. The bands (<0.8 low,
 0.8–1.3 "optimal", 1.3–1.5 elevated, >1.5 high) come from team-sport research and are
 debated, so treat a spike as a prompt to look at your training rather than as an injury
 forecast.
+
+**Load diagnosis.** Above the training-load charts, a box explains the latest ratio in plain
+words. It compares the last 7 days with the 4 weeks before and names what stands out:
+runs on 3 or more consecutive days, a session whose average HR is well above a usual run
+(above the 80th percentile and at least 8 bpm over the median), most of the week's load in
+the last 3 days, 15% more or less distance than a usual week, a run 25% longer than the usual
+long run, or a light week that lowered the 4-week base. It ends with what to do for that band.
 
 **Race predictions.** The app takes the run with the highest **VDOT** (Daniels–Gilbert
 oxygen-cost equations) among runs of 3 km or more in the lookback window (90 days by

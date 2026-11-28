@@ -67,7 +67,7 @@ def _activity(
 
 def generate_demo(
     con: duckdb.DuckDBPyConnection,
-    days: int = 210,
+    days: int = 910,
     end: date | None = None,
     seed: int = 7,
 ) -> int:

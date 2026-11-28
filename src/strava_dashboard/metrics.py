@@ -253,6 +253,299 @@ def aerobic_efficiency(
 
 
 # ---------------------------------------------------------------------------
+# Year-over-year comparison
+# ---------------------------------------------------------------------------
+
+PERIOD_COLUMNS = [
+    "label",
+    "start",
+    "end",
+    "runs",
+    "distance_per_week",
+    "avg_pace",
+    "z2_pace",
+    "z2_runs",
+    "long_run",
+]
+
+
+def period_comparison(
+    activities: pd.DataFrame,
+    as_of: date | datetime | pd.Timestamp,
+    *,
+    months: int = 6,
+    years: int = 3,
+    units: str = "km",
+    zones: Zones | None = None,
+    road_only: bool = True,
+) -> pd.DataFrame:
+    """Compare the same window of `months` ending on `as_of`, this year and in earlier years.
+
+    Row k covers the `months` up to `as_of` minus k years, so seasons line up. Volume
+    (runs, distance per week, longest run) counts every run. Pace leaves out trail runs
+    when `road_only`, because hills and terrain slow them down:
+      - avg_pace: total moving time / total distance, so a long run counts more than a short one;
+      - z2_pace: median pace of steady zone 2 runs (see `aerobic_efficiency`), the fairest
+        comparison, since it compares runs at the same effort. Needs `zones`.
+    """
+    as_of = pd.Timestamp(as_of).normalize()
+    per_unit = METERS_PER_UNIT[units]
+    runs = _valid_runs(activities)
+    rows = []
+    for k in range(years):
+        end = as_of - pd.DateOffset(years=k)
+        start = end - pd.DateOffset(months=months)
+        day = runs["start_date_local"].dt.normalize()
+        window = runs[(day > start) & (day <= end)]
+        paced = window
+        if road_only and "sport_type" in window:
+            paced = window[window["sport_type"] != "TrailRun"]
+        weeks = (end - start).days / 7
+        distance = paced["distance_m"].sum()
+        z2 = (
+            aerobic_efficiency(window, zones, units, road_only=road_only)
+            if zones
+            else pd.DataFrame()
+        )
+        rows.append(
+            {
+                "label": f"Last {months} months"
+                if k == 0
+                else f"{k} year{'s' if k > 1 else ''} ago",
+                "start": start + pd.Timedelta(days=1),
+                "end": end,
+                "runs": len(window),
+                "distance_per_week": window["distance_m"].sum() / per_unit / weeks,
+                "avg_pace": (paced["moving_time_s"].sum() / 60) / (distance / per_unit)
+                if distance
+                else np.nan,
+                "z2_pace": z2["pace"].median() if not z2.empty else np.nan,
+                "z2_runs": len(z2),
+                "long_run": window["distance_m"].max() / per_unit if len(window) else np.nan,
+            }
+        )
+    return pd.DataFrame(rows, columns=PERIOD_COLUMNS)
+
+
+def _pace_gap(now: float, then: float) -> str | None:
+    """'12 s faster' / '5 s slower' per unit between two paces in minutes, or None."""
+    if pd.isna(now) or pd.isna(then):
+        return None
+    seconds = round((then - now) * 60)
+    if seconds == 0:
+        return "the same as"
+    return f"{abs(seconds)} s {'faster' if seconds > 0 else 'slower'} than"
+
+
+def comparison_summary(cmp: pd.DataFrame, units: str = "km") -> str:
+    """Average pace this period against the same period in earlier years, then zone 2 pace."""
+    if cmp.empty or pd.isna(cmp["avg_pace"].iloc[0]):
+        return "No runs in this period yet."
+    now, earlier = cmp.iloc[0], cmp.iloc[1:]
+
+    def gaps(column: str) -> list[str]:
+        out = []
+        for _, then in earlier.iterrows():
+            gap = _pace_gap(now[column], then[column])
+            if gap:
+                out.append(f"{gap} {then['label']}")
+        return out
+
+    text = (
+        f"Average pace over the {now['label'].lower()} was {format_pace(now['avg_pace'])} /{units}"
+    )
+    avg_gaps = gaps("avg_pace")
+    text += (", " + " and ".join(avg_gaps) + ".") if avg_gaps else "."
+    z2_gaps = gaps("z2_pace")
+    if pd.notna(now["z2_pace"]) and z2_gaps:
+        text += (
+            f" At the same effort (zone 2 runs) it was {format_pace(now['z2_pace'])} /{units}, "
+            + " and ".join(z2_gaps)
+            + "."
+        )
+    return text
+
+
+# ---------------------------------------------------------------------------
+# Training load diagnosis
+# ---------------------------------------------------------------------------
+
+LOAD_ADVICE = {
+    "Low": (
+        "Fine for a taper or a recovery week. Over several weeks, load this low means "
+        "losing fitness."
+    ),
+    "Optimal": "Load is in line with what your body is used to. Keep building gradually.",
+    "Elevated": (
+        "Fine if it was planned, like a workout block or race week. If not, make the next "
+        "day or two easy or rest: the ratio drops quickly after a lighter day."
+    ),
+    "High": (
+        "A big jump compared with your usual load. Take an easy or rest day and avoid "
+        "stacking hard sessions until the ratio is back under 1.3."
+    ),
+    "Insufficient data": "The ratio needs at least 28 days of history.",
+}
+
+
+def _on_day(ts: pd.Timestamp, as_of: pd.Timestamp) -> str:
+    """'today', 'yesterday' or 'on Thursday (Nov 26)'."""
+    days = (as_of - ts.normalize()).days
+    if days == 0:
+        return "today"
+    if days == 1:
+        return "yesterday"
+    return f"on {ts:%A} ({ts:%b} {ts.day})"
+
+
+def load_diagnosis(
+    activities: pd.DataFrame,
+    acwr_df: pd.DataFrame,
+    *,
+    units: str = "km",
+    method: str = "ewma",
+) -> dict:
+    """Explain the latest acute:chronic ratio in plain words.
+
+    Looks at the 7 days up to the last day of `acwr_df` and the 4 weeks before them for:
+    runs on consecutive days, an unusually hard session (average HR well above your usual),
+    load bunched into the last 3 days, more distance than a usual week, a longer long run
+    than usual, and a light week that lowered the 28-day base.
+    Returns {"ratio", "band", "summary", "reasons", "advice"}.
+    """
+    if acwr_df.empty or acwr_df["ratio"].dropna().empty:
+        band = "Insufficient data"
+        return {
+            "ratio": np.nan,
+            "band": band,
+            "summary": "",
+            "reasons": [],
+            "advice": LOAD_ADVICE[band],
+        }
+
+    as_of = acwr_df.index[-1].normalize()
+    ratio = float(acwr_df["ratio"].iloc[-1])
+    band = acwr_band(ratio)
+    per_unit = METERS_PER_UNIT[units]
+
+    runs = _valid_runs(activities).copy()
+    runs["day"] = runs["start_date_local"].dt.normalize()
+    runs["dist"] = runs["distance_m"] / per_unit
+    week = runs[(runs["day"] > as_of - pd.Timedelta(days=7)) & (runs["day"] <= as_of)]
+    before = runs[
+        (runs["day"] > as_of - pd.Timedelta(days=35))
+        & (runs["day"] <= as_of - pd.Timedelta(days=7))
+    ]
+
+    change = (ratio - 1) * 100
+    if band == "Optimal":
+        summary = (
+            f"In the optimal range (ratio {ratio:.2f}): this week's load is close to "
+            "what you're used to."
+        )
+    else:
+        direction = "above" if change > 0 else "below"
+        summary = (
+            f"{band} (ratio {ratio:.2f}): your load over the last 7 days was {abs(change):.0f}% "
+            f"{direction} what you're used to over the last 4 weeks."
+        )
+
+    reasons: list[str] = []
+
+    # 1. Runs on consecutive days, ending today or yesterday.
+    run_days = set(week["day"])
+    last_run_day = max(run_days) if run_days else None
+    if last_run_day is not None and (as_of - last_run_day).days <= 1:
+        streak, d = 0, last_run_day
+        while d in run_days:
+            streak += 1
+            d -= pd.Timedelta(days=1)
+        if streak >= 3:
+            first = last_run_day - pd.Timedelta(days=streak - 1)
+            reasons.append(
+                f"You ran {streak} days in a row, from {first:%A} to {last_run_day:%A}, "
+                "with no rest day between."
+            )
+
+    # 2. An unusually hard session: average HR well above your usual runs.
+    usual_hr = before["average_heartrate"].dropna()
+    week_hr = week.dropna(subset=["average_heartrate"])
+    if len(usual_hr) >= 5 and not week_hr.empty:
+        hardest = week_hr.loc[week_hr["average_heartrate"].idxmax()]
+        median = usual_hr.median()
+        if hardest["average_heartrate"] >= max(usual_hr.quantile(0.8), median + 8):
+            reasons.append(
+                f"The {hardest['dist']:.1f} {units} {_on_day(hardest['start_date_local'], as_of)} "
+                f"was a hard session: average HR {hardest['average_heartrate']:.0f} bpm, "
+                f"against {median:.0f} bpm on a usual run."
+            )
+
+    # 3. Load bunched into the last 3 days (the EWMA model weights recent days most).
+    last7 = acwr_df["load"].iloc[-7:]
+    if last7.sum() > 0:
+        share = acwr_df["load"].iloc[-3:].sum() / last7.sum()
+        if share >= 0.6 and band in ("Elevated", "High"):
+            note = (
+                " The ratio weights recent days most, so it reacts quickly."
+                if method == "ewma"
+                else ""
+            )
+            reasons.append(f"{share:.0%} of this week's load came in the last 3 days.{note}")
+
+    # 4. More distance than a usual week.
+    if not before.empty:
+        usual_week = before["dist"].sum() / 4
+        this_week = week["dist"].sum()
+        if usual_week > 0:
+            diff = this_week / usual_week - 1
+            if diff >= 0.15:
+                reasons.append(
+                    f"You ran {this_week:.0f} {units} in the last 7 days, {diff:.0%} more than "
+                    f"your usual week ({usual_week:.0f} {units})."
+                )
+            elif diff <= -0.15 and band == "Low":
+                reasons.append(
+                    f"You ran {this_week:.0f} {units} in the last 7 days, {-diff:.0%} less than "
+                    f"your usual week ({usual_week:.0f} {units})."
+                )
+
+        # 5. A longer long run than usual.
+        weekly_long = before.groupby((as_of - before["day"]).dt.days // 7)["dist"].max()
+        if not week.empty and len(weekly_long) >= 2:
+            longest = week.loc[week["dist"].idxmax()]
+            usual_long = weekly_long.mean()
+            if longest["dist"] >= 1.25 * usual_long:
+                when = _on_day(longest["start_date_local"], as_of)
+                reasons.append(
+                    f"The {longest['dist']:.1f} {units} {when} "
+                    f"was longer than your usual long run ({usual_long:.1f} {units})."
+                )
+
+        # 6. A light week in the base makes the 28-day average low.
+        weeks = [
+            before[(as_of - before["day"]).dt.days // 7 == k]["dist"].sum() for k in (1, 2, 3, 4)
+        ]
+        typical = np.mean(weeks)
+        if band in ("Elevated", "High") and typical > 0 and min(weeks) < 0.6 * typical:
+            k = int(np.argmin(weeks)) + 1
+            reasons.append(
+                f"{k} week{'s' if k > 1 else ''} ago you ran only {min(weeks):.0f} {units}, "
+                "which lowers the 4-week base this week is compared with."
+            )
+
+    if not reasons and band in ("Elevated", "High"):
+        reasons.append("No single cause stands out: the load built up over the whole week.")
+
+    return {
+        "ratio": ratio,
+        "band": band,
+        "summary": summary,
+        "reasons": reasons,
+        "advice": LOAD_ADVICE[band],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Training load and acute:chronic workload ratio
 # ---------------------------------------------------------------------------
 

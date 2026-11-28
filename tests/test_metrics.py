@@ -496,3 +496,169 @@ def test_aerobic_efficiency_open_ended_zone2():
         ]
     )
     assert len(m.aerobic_efficiency(acts, [(0, 130), (130, -1)])) == 1
+
+
+# --- year-over-year comparison --------------------------------------------------
+
+AS_OF = "2026-11-28"
+
+
+def test_period_comparison_lines_up_the_same_months_each_year():
+    acts = frame(
+        [
+            # this year: 10 km in 50 min (zone 2) and 5 km in 30 min -> 80 min / 15 km
+            {
+                "id": 1,
+                "start_date_local": "2026-11-28 07:00",
+                "distance_m": 10000,
+                "moving_time_s": 3000,
+                "average_heartrate": 140.0,
+                "sport_type": "Run",
+            },
+            {
+                "id": 2,
+                "start_date_local": "2026-06-01 07:00",
+                "distance_m": 5000,
+                "moving_time_s": 1800,
+                "sport_type": "Run",
+            },
+            # a slow trail run: counts for volume, not for pace
+            {
+                "id": 3,
+                "start_date_local": "2026-07-01 07:00",
+                "distance_m": 10000,
+                "moving_time_s": 4800,
+                "sport_type": "TrailRun",
+            },
+            # exactly at the window's start: belongs to the window before
+            {
+                "id": 4,
+                "start_date_local": "2026-05-28 07:00",
+                "distance_m": 5000,
+                "moving_time_s": 1500,
+                "sport_type": "Run",
+            },
+            # one year ago: 10 km in 55 min
+            {
+                "id": 5,
+                "start_date_local": "2025-09-01 07:00",
+                "distance_m": 10000,
+                "moving_time_s": 3300,
+                "sport_type": "Run",
+            },
+        ]
+    )
+    zones = [(0, 130), (130, 150), (150, 170), (170, -1)]
+    cmp = m.period_comparison(acts, AS_OF, months=6, years=3, units="km", zones=zones)
+
+    assert cmp["label"].tolist() == ["Last 6 months", "1 year ago", "2 years ago"]
+    assert cmp["runs"].tolist() == [3, 1, 0]
+    assert cmp["avg_pace"].iloc[0] == pytest.approx(80 / 15)
+    assert cmp["avg_pace"].iloc[1] == pytest.approx(5.5)
+    assert np.isnan(cmp["avg_pace"].iloc[2])
+    weeks = (pd.Timestamp("2026-11-28") - pd.Timestamp("2026-05-28")).days / 7
+    assert cmp["distance_per_week"].iloc[0] == pytest.approx(25 / weeks)
+    assert cmp["z2_pace"].iloc[0] == pytest.approx(5.0) and cmp["z2_runs"].iloc[0] == 1
+    assert cmp["long_run"].iloc[0] == pytest.approx(10)
+    assert cmp["start"].iloc[1] == pd.Timestamp("2025-05-29")
+
+    text = m.comparison_summary(cmp, "km")
+    assert text.startswith(
+        "Average pace over the last 6 months was 5:20 /km, 10 s faster than 1 year ago."
+    )
+    assert "zone 2" not in text  # no zone 2 runs a year ago to compare with
+
+    with_trail = m.period_comparison(
+        acts, AS_OF, months=6, units="km", zones=zones, road_only=False
+    )
+    assert with_trail["avg_pace"].iloc[0] == pytest.approx(160 / 25)
+
+
+def test_comparison_summary_without_runs():
+    cmp = m.period_comparison(
+        frame(
+            [{"id": 1, "start_date_local": "2020-01-01", "distance_m": 5000, "moving_time_s": 1500}]
+        ),
+        AS_OF,
+    )
+    assert m.comparison_summary(cmp) == "No runs in this period yet."
+
+
+# --- training load diagnosis ----------------------------------------------------
+
+
+def _training(last_week):
+    """Five steady weeks (8 km, 48 min, 130 bpm on Mon/Wed/Fri/Sun), then `last_week` rows."""
+    rows, i = [], 0
+    for day in pd.date_range("2026-10-19", "2026-11-20"):
+        if day.day_of_week in (0, 2, 4, 6):
+            i += 1
+            rows.append(
+                {
+                    "id": i,
+                    "start_date_local": day + pd.Timedelta(hours=7),
+                    "distance_m": 8000,
+                    "moving_time_s": 2880,
+                    "average_heartrate": 130.0,
+                }
+            )
+    for offset, (km, hr) in enumerate(last_week):
+        if km:
+            i += 1
+            rows.append(
+                {
+                    "id": i,
+                    "start_date_local": pd.Timestamp("2026-11-21 07:00")
+                    + pd.Timedelta(days=offset),
+                    "distance_m": km * 1000,
+                    "moving_time_s": km * 360,
+                    "average_heartrate": hr,
+                }
+            )
+    return frame(rows)
+
+
+def _diagnose(acts, end="2026-11-27", method="ewma"):
+    loads = m.activity_load(acts, "distance", units="km")
+    return m.load_diagnosis(
+        acts, m.acwr(m.daily_load(loads, end=pd.Timestamp(end)), method), units="km"
+    )
+
+
+def test_diagnosis_explains_a_block_of_hard_consecutive_days():
+    # Sat-Tue rest, then Wed 11 km, Thu 16 km hard, Fri 11 km
+    acts = _training([(0, 0), (0, 0), (0, 0), (0, 0), (11, 132), (16, 155), (11, 128)])
+    d = _diagnose(acts)
+    assert d["band"] in ("Elevated", "High")
+    text = " ".join(d["reasons"])
+    assert "3 days in a row, from Wednesday to Friday" in text
+    assert "The 16.0 km yesterday was a hard session: average HR 155 bpm" in text
+    assert "of this week's load came in the last 3 days" in text
+    assert "longer than your usual long run (8.0 km)" in text
+    assert d["advice"] == m.LOAD_ADVICE[d["band"]]
+
+
+def test_diagnosis_of_a_steady_week_is_optimal_and_quiet():
+    acts = _training([(0, 0), (8, 130), (0, 0), (8, 130), (0, 0), (8, 130), (0, 0)])
+    # On a run day: with runs every other day, EWMA swings between ~0.8 (rest day) and ~1.0.
+    d = _diagnose(acts, end="2026-11-26")
+    assert d["band"] == "Optimal"
+    assert d["reasons"] == []
+    assert d["summary"].startswith("In the optimal range")
+
+
+def test_diagnosis_of_a_light_week_is_low():
+    acts = _training([(0, 0), (0, 0), (0, 0), (4, 120), (0, 0), (0, 0), (0, 0)])
+    d = _diagnose(acts)
+    assert d["band"] == "Low"
+    assert "less than your usual week" in " ".join(d["reasons"])
+
+
+def test_diagnosis_needs_history():
+    d = m.load_diagnosis(
+        frame(
+            [{"id": 1, "start_date_local": "2026-11-27", "distance_m": 5000, "moving_time_s": 1500}]
+        ),
+        pd.DataFrame(columns=["load", "ratio"]),
+    )
+    assert d["band"] == "Insufficient data" and d["reasons"] == []
